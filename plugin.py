@@ -23,6 +23,7 @@ Copyright:
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -54,6 +55,40 @@ from unmanic.libs.unplugins.settings import PluginSettings
 logger = logging.getLogger("Unmanic.Plugin.plex_dvr_repair")
 PLUGIN_ID = "plex_dvr_repair"
 TASK_STATE_KEY = "repair_job_manifest"
+FFMPEG_DIAGNOSTIC_PATTERNS = {
+    "corrupt_packets": [
+        re.compile(r"packet corrupt", re.IGNORECASE),
+        re.compile(r"corrupt", re.IGNORECASE),
+        re.compile(r"discarding", re.IGNORECASE),
+    ],
+    "decode_errors": [
+        re.compile(r"error while decoding", re.IGNORECASE),
+        re.compile(r"invalid data found", re.IGNORECASE),
+        re.compile(r"missing picture", re.IGNORECASE),
+        re.compile(r"concealing", re.IGNORECASE),
+    ],
+    "timestamp_warnings": [
+        re.compile(r"non monotonically increasing dts", re.IGNORECASE),
+        re.compile(r"backward in time", re.IGNORECASE),
+        re.compile(r"timestamp", re.IGNORECASE),
+        re.compile(r"dts", re.IGNORECASE),
+        re.compile(r"pts", re.IGNORECASE),
+    ],
+    "muxing_warnings": [
+        re.compile(r"mux", re.IGNORECASE),
+        re.compile(r"interleav", re.IGNORECASE),
+        re.compile(r"queue", re.IGNORECASE),
+    ],
+    "audio_warnings": [
+        re.compile(r"\baudio\b", re.IGNORECASE),
+        re.compile(r"\baac\b", re.IGNORECASE),
+    ],
+    "video_warnings": [
+        re.compile(r"\bvideo\b", re.IGNORECASE),
+        re.compile(r"\bh264\b", re.IGNORECASE),
+        re.compile(r"\bhevc\b", re.IGNORECASE),
+    ],
+}
 
 
 class Settings(PluginSettings):
@@ -145,6 +180,168 @@ def repaired_metadata_for_path(path, file_metadata=None):
     return {}
 
 
+def _to_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def summarize_probe(probe_data):
+    streams = probe_data.get("streams", [])
+    format_data = probe_data.get("format", {})
+    video_streams = [
+        stream for stream in streams if stream.get("codec_type") == "video"
+    ]
+    audio_streams = [
+        stream for stream in streams if stream.get("codec_type") == "audio"
+    ]
+    subtitle_streams = [
+        stream for stream in streams if stream.get("codec_type") == "subtitle"
+    ]
+    data_streams = [stream for stream in streams if stream.get("codec_type") == "data"]
+    video_stream = video_streams[0] if video_streams else {}
+    audio_stream = audio_streams[0] if audio_streams else {}
+    format_duration = _to_float(format_data.get("duration"))
+    video_start_time = _to_float(video_stream.get("start_time"))
+    audio_start_time = _to_float(audio_stream.get("start_time"))
+    return {
+        "container": format_data.get("format_name"),
+        "duration": format_duration,
+        "duration_present": format_duration is not None,
+        "bit_rate": format_data.get("bit_rate"),
+        "video": {
+            "codec": video_stream.get("codec_name"),
+            "width": video_stream.get("width"),
+            "height": video_stream.get("height"),
+            "pix_fmt": video_stream.get("pix_fmt"),
+            "frame_rate": video_stream.get("avg_frame_rate"),
+            "start_time": video_start_time,
+        },
+        "audio": {
+            "codec": audio_stream.get("codec_name"),
+            "channels": audio_stream.get("channels"),
+            "sample_rate": audio_stream.get("sample_rate"),
+            "bit_rate": audio_stream.get("bit_rate"),
+            "start_time": audio_start_time,
+        },
+        "stream_counts": {
+            "video": len(video_streams),
+            "audio": len(audio_streams),
+            "subtitle": len(subtitle_streams),
+            "data": len(data_streams),
+            "chapters": len(probe_data.get("chapters", [])),
+        },
+        "health_flags": {
+            "missing_duration_metadata": format_duration is None,
+            "negative_video_start_time": bool(
+                video_start_time is not None and video_start_time < 0
+            ),
+            "negative_audio_start_time": bool(
+                audio_start_time is not None and audio_start_time < 0
+            ),
+        },
+    }
+
+
+def build_fragment_group_summary(group):
+    return [
+        {
+            "name": fragment.path.name,
+            "mtime": fragment.mtime,
+            "duration": fragment.duration,
+            "size_bytes": fragment.size_bytes,
+            "copy_number": fragment.copy_number,
+        }
+        for fragment in group
+    ]
+
+
+def build_input_diagnostics(job_state, fragments_with_probe):
+    selected_group = job_state["selected_group"]
+    total_duration = sum(
+        fragment.duration or 0.0 for fragment, _probe in fragments_with_probe
+    )
+    total_size = sum(
+        fragment.size_bytes or 0 for fragment, _probe in fragments_with_probe
+    )
+    primary_probe = fragments_with_probe[0][1] if fragments_with_probe else {}
+    return {
+        "recording_attempt_count": len(job_state["all_groups"]),
+        "selected_fragment_count": len(selected_group),
+        "selected_fragments": build_fragment_group_summary(selected_group),
+        "all_recording_groups": [
+            build_fragment_group_summary(group) for group in job_state["all_groups"]
+        ],
+        "selected_group_totals": {
+            "duration": total_duration,
+            "size_bytes": total_size,
+        },
+        "source_probe_summary": summarize_probe(primary_probe),
+        "health_flags": {
+            "fragmented_input": len(selected_group) > 1,
+            "multiple_recording_attempts_detected": len(job_state["all_groups"]) > 1,
+        },
+    }
+
+
+def create_ffmpeg_diagnostics():
+    return {
+        "counts": {
+            "corrupt_packets": 0,
+            "decode_errors": 0,
+            "timestamp_warnings": 0,
+            "muxing_warnings": 0,
+            "audio_warnings": 0,
+            "video_warnings": 0,
+        },
+        "examples": {
+            "corrupt_packets": [],
+            "decode_errors": [],
+            "timestamp_warnings": [],
+            "muxing_warnings": [],
+            "audio_warnings": [],
+            "video_warnings": [],
+        },
+    }
+
+
+def collect_ffmpeg_diagnostic_line(line, diagnostics):
+    for category, patterns in FFMPEG_DIAGNOSTIC_PATTERNS.items():
+        if any(pattern.search(line) for pattern in patterns):
+            diagnostics["counts"][category] += 1
+            examples = diagnostics["examples"][category]
+            if len(examples) < 5 and line not in examples:
+                examples.append(line)
+
+
+def build_repair_summary(input_diag, repair_diag, output_diag):
+    findings = []
+    if input_diag["health_flags"]["multiple_recording_attempts_detected"]:
+        findings.append("multiple recording attempts detected")
+    if input_diag["health_flags"]["fragmented_input"]:
+        findings.append("selected recording attempt required stitching")
+    if input_diag["source_probe_summary"]["health_flags"]["missing_duration_metadata"]:
+        findings.append("input duration metadata missing")
+    if repair_diag["ffmpeg_findings"]["counts"]["corrupt_packets"] > 0:
+        findings.append("ffmpeg encountered corrupt packets")
+    if repair_diag["ffmpeg_findings"]["counts"]["decode_errors"] > 0:
+        findings.append("ffmpeg encountered decode errors")
+    if repair_diag["ffmpeg_findings"]["counts"]["timestamp_warnings"] > 0:
+        findings.append("ffmpeg encountered timestamp warnings")
+    output_findings = []
+    if output_diag["probe_summary"]["duration_present"]:
+        output_findings.append("output duration metadata present")
+    if not output_diag["probe_summary"]["health_flags"]["negative_video_start_time"]:
+        output_findings.append("video timestamps do not start negative")
+    if not output_diag["probe_summary"]["health_flags"]["negative_audio_start_time"]:
+        output_findings.append("audio timestamps do not start negative")
+    return {
+        "input_findings": findings,
+        "output_findings": output_findings,
+    }
+
+
 def execute_ffmpeg_command(
     command,
     total_duration,
@@ -172,6 +369,7 @@ def execute_ffmpeg_command(
         errors="replace",
     )
     last_percent = None
+    diagnostics = create_ffmpeg_diagnostics()
     while True:
         line = process.stdout.readline()
         if line:
@@ -209,12 +407,14 @@ def execute_ffmpeg_command(
                 logger.debug(stripped)
                 if log_queue is not None:
                     log_queue.put(stripped)
+                collect_ffmpeg_diagnostic_line(stripped, diagnostics)
         if line == "" and process.poll() is not None:
             break
     if process.returncode != 0:
         raise RuntimeError(
             f"Command failed with exit code {process.returncode}: {format_command_for_logs(command)}"
         )
+    return diagnostics
 
 
 def execute_ffmpeg_with_fallback(
@@ -236,7 +436,7 @@ def execute_ffmpeg_with_fallback(
             logger.info(message)
             if log_queue is not None:
                 log_queue.put(message)
-            execute_ffmpeg_command(
+            diagnostics = execute_ffmpeg_command(
                 command,
                 total_duration=total_duration,
                 percent_start=percent_start,
@@ -244,7 +444,7 @@ def execute_ffmpeg_with_fallback(
                 log_queue=log_queue,
                 prog_queue=prog_queue,
             )
-            return encoder_mode
+            return encoder_mode, diagnostics
         except Exception as exc:
             last_error = exc
             message = (
@@ -558,7 +758,13 @@ def run_repair_job(
             settings_dict=settings_dict,
             log_queue=log_queue,
         )
-        encoder_mode = execute_ffmpeg_with_fallback(
+        fragments_with_probe = ensure_fragment_profiles(
+            [(fragment, probe_json(fragment.path)) for fragment in selected_group]
+        )
+        input_diagnostics = build_input_diagnostics(job_state, fragments_with_probe)
+        if log_queue is not None:
+            log_queue.put(f"Repair diagnostics (input): {input_diagnostics}")
+        encoder_mode, ffmpeg_findings = execute_ffmpeg_with_fallback(
             commands,
             total_duration=total_duration,
             percent_start=0,
@@ -568,6 +774,17 @@ def run_repair_job(
         )
         output_probe = validate_output(staged_output)
         output_format = output_probe.get("format", {})
+        output_diagnostics = {
+            "probe_summary": summarize_probe(output_probe),
+        }
+        repair_diagnostics = {
+            "encoder_mode": encoder_mode,
+            "fallback_used": encoder_mode != commands[0][0],
+            "ffmpeg_findings": ffmpeg_findings,
+        }
+        summary = build_repair_summary(
+            input_diagnostics, repair_diagnostics, output_diagnostics
+        )
         message = (
             f"Successfully stitched group 1 with encoder '{encoder_mode}' -> "
             f"{cache_output_path.name}"
@@ -588,6 +805,10 @@ def run_repair_job(
         logger.debug(message)
         if log_queue is not None:
             log_queue.put(message)
+        if log_queue is not None:
+            log_queue.put(f"Repair diagnostics (process): {repair_diagnostics}")
+            log_queue.put(f"Repair diagnostics (output): {output_diagnostics}")
+            log_queue.put(f"Repair diagnostics (summary): {summary}")
         commit_output(staged_output, cache_output_path, log_queue=log_queue)
         if prog_queue is not None:
             prog_queue.put(100)

@@ -1,3 +1,7 @@
+**<span style="color:#56adda">0.0.3</span>**
+- Add final repair diagnostics reporting with input fragment summary, ffmpeg findings, and output probe summary
+- Categorize ffmpeg warnings encountered during repair so logs show corruption, decode, timestamp, and muxing issues that were worked around
+
 **<span style="color:#56adda">0.0.2</span>**
 - Fix MKV outputs to be written as normal finished Matroska files instead of live-style MKV streams
 - Remove live/cluster muxing flags that interfered with duration and seekability in Plex playback
