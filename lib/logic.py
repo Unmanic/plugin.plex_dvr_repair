@@ -1,5 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+plugins.plex_dvr_repair.lib.logic.py
+
+Written by:               Josh.5 <jsunnex@gmail.com>
+Date:                     18 Mar 2026
+
+    Copyright:
+        Copyright (C) 2021 Josh Sunnex
+
+        This program is free software: you can redistribute it and/or modify it under the terms of the GNU General
+        Public License as published by the Free Software Foundation, version 3.
+
+        This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the
+        implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+        for more details.
+
+        You should have received a copy of the GNU General Public License along with this program.
+        If not, see <https://www.gnu.org/licenses/>.
+
+"""
 
 import logging
 import re
@@ -494,7 +514,9 @@ def select_dominant_profile(fragment_probes):
         video_signature = _stream_signature(video_stream)
         video_counter[video_signature] += weight
         video_profiles[video_signature] = video_stream
-        video_duration = _safe_float(video_stream.get("duration")) or fragment.duration or 0.0
+        video_duration = (
+            _safe_float(video_stream.get("duration")) or fragment.duration or 0.0
+        )
         video_candidates.append((video_duration, fragment.size_bytes, video_stream))
         if first_video_signature is None:
             first_video_signature = video_signature
@@ -506,7 +528,9 @@ def select_dominant_profile(fragment_probes):
             audio_signature = _stream_signature(audio_stream)
             audio_counter[audio_signature] += weight
             audio_profiles[audio_signature] = audio_stream
-            audio_duration = _safe_float(audio_stream.get("duration")) or fragment.duration or 0.0
+            audio_duration = (
+                _safe_float(audio_stream.get("duration")) or fragment.duration or 0.0
+            )
             audio_candidates.append((audio_duration, fragment.size_bytes, audio_stream))
             if first_audio_signature is None:
                 first_audio_signature = audio_signature
