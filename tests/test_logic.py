@@ -247,8 +247,8 @@ class PlexDvrRepairLogicTests(unittest.TestCase):
         self.assertIn("0:2?", command)
         self.assertIn("-c:s", command)
         self.assertIn("copy", command)
-        self.assertIn("-cluster_time_limit", command)
-        self.assertIn("-flush_packets", command)
+        self.assertIn("-avoid_negative_ts", command)
+        self.assertIn("make_zero", command)
 
     def test_select_dominant_profile_prefers_longest_video_fragment(self):
         short_fragment = Fragment(

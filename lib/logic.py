@@ -854,6 +854,8 @@ def build_ffmpeg_command(
         "4096",
         "-max_interleave_delta",
         "0",
+        "-avoid_negative_ts",
+        "make_zero",
     ]
     if output_target["container"] == "mpegts":
         command += [
@@ -861,8 +863,6 @@ def build_ffmpeg_command(
             "0",
             "-muxpreload",
             "0",
-            "-avoid_negative_ts",
-            "make_zero",
             "-mpegts_flags",
             "+resend_headers",
             "-f",
@@ -871,14 +871,6 @@ def build_ffmpeg_command(
         ]
     else:
         command += [
-            "-flush_packets",
-            "1",
-            "-cluster_time_limit",
-            "1000",
-            "-cluster_size_limit",
-            "1048576",
-            "-live",
-            "1",
             "-f",
             "matroska",
             str(output_file),
