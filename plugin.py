@@ -854,7 +854,18 @@ def on_library_management_file_test(data, file_metadata=None):
         return
 
     fragment = parse_fragment_path(abspath)
-    if fragment is None or not is_candidate_extension(abspath.suffix):
+    if fragment is None:
+        logger.debug(
+            "File '%s' does not need repair because it does not match a supported Plex DVR recording filename pattern.",
+            abspath,
+        )
+        return
+
+    if not is_candidate_extension(abspath.suffix):
+        logger.debug(
+            "File '%s' does not need repair because it is not a supported Plex DVR source extension.",
+            abspath,
+        )
         return
 
     if is_repaired_output_name(abspath.name):

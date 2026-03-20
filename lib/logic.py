@@ -39,10 +39,6 @@ REPAIRED_FILE_MARKER = "UNMANIC_REPAIRED"
 logger = logging.getLogger("Unmanic.Plugin.plex_dvr_repair")
 
 
-def debug_log(message):
-    logger.debug("[PlexDvrStitcher] %s", message)
-
-
 @dataclass
 class Fragment:
     path: Path
@@ -118,7 +114,7 @@ def discover_candidate_fragments(base_path):
             continue
         candidates.append(parsed)
     candidates = sorted(candidates, key=fragment_sort_key)
-    debug_log(
+    logger.debug(
         "Discovered candidate fragments for '%s': %s"
         % (
             base_path.name,
@@ -154,7 +150,7 @@ def find_active_sidecars(base_path, grace_minutes, ignore_when_sidecars_exist):
         if sidecar.stat().st_mtime >= threshold:
             active.append(sidecar)
     if active:
-        debug_log(
+        logger.debug(
             "Active sidecars for '%s' within %s minutes: %s"
             % (
                 base_path.name,
@@ -188,7 +184,7 @@ def group_fragments_by_recording_window(
             groups[-1].append(fragment)
             group_end_mtime = max(group_end_mtime, fragment.mtime)
             group_start_estimate = min(group_start_estimate, fragment_start_estimate)
-    debug_log(
+    logger.debug(
         "Grouped fragments by recording window with %s-second join buffer: %s"
         % (
             join_buffer_seconds,
@@ -213,7 +209,7 @@ def _group_score(group):
 
 def choose_groups_to_keep(groups, keep_multiple):
     if keep_multiple or len(groups) <= 1:
-        debug_log(
+        logger.debug(
             "Keeping all recording groups: %s"
             % [[fragment.path.name for fragment in group] for group in groups]
         )
@@ -223,7 +219,7 @@ def choose_groups_to_keep(groups, keep_multiple):
         duration_known, total_duration, total_size, newest = _group_score(group)
         scored.append((duration_known, total_duration, total_size, newest, group))
     scored.sort(key=lambda item: (item[3], item[0], item[1], item[2]), reverse=True)
-    debug_log(
+    logger.debug(
         "Selected latest recording group from scored candidates: %s"
         % [
             {
@@ -396,7 +392,7 @@ def estimate_fragment_bitrates(fragment_probes):
         "video_bitrate": video_target,
         "audio_bitrate": audio_target if audio_samples else None,
     }
-    debug_log(
+    logger.debug(
         "Estimated bitrate targets from fragment probes: %s"
         % {
             "video_samples": video_samples,
@@ -439,7 +435,7 @@ def resolve_output_profile(output_profile, source_extension, source_video_codec)
         "extension": extension,
         "video_codec": video_codec,
     }
-    debug_log("Resolved output profile: %s" % profile)
+    logger.debug("Resolved output profile: %s" % profile)
     return profile
 
 
@@ -491,7 +487,7 @@ def estimate_target_video_bitrate(
         "reduction_factor": reduction_factor,
         "reason": reason,
     }
-    debug_log("Estimated target bitrate decision: %s" % result)
+    logger.debug("Estimated target bitrate decision: %s" % result)
     return result
 
 
@@ -546,7 +542,7 @@ def select_dominant_profile(fragment_probes):
     else:
         dominant_audio = None
 
-    debug_log(
+    logger.debug(
         "Selected dominant stream profile: %s"
         % {
             "video": dominant_video,
@@ -585,7 +581,7 @@ def _list_ffmpeg_encoders():
     if result.returncode != 0:
         return ""
     output = result.stdout or ""
-    debug_log("Fetched ffmpeg encoders list successfully")
+    logger.debug("Fetched ffmpeg encoders list successfully")
     return output
 
 
@@ -602,7 +598,7 @@ def detect_hardware_acceleration_methods(target_video_codec="h264"):
     if Path("/dev/dri").exists() and vaapi_encoder in encoders_output:
         available.append("vaapi")
     available.append("software")
-    debug_log(
+    logger.debug(
         "Detected hardware acceleration methods in priority order for %s: %s"
         % (target_video_codec, available)
     )
@@ -645,21 +641,21 @@ def _build_stream_mapping(fragment_probes, container):
                 mapping.append(["-map", f"0:{stream_index}?"])
                 subtitle_actions.append("srt")
             else:
-                debug_log(
+                logger.debug(
                     "Skipping subtitle stream %s with codec '%s' because it is not safe for MKV output"
                     % (stream_index, codec_name)
                 )
         elif stream_type == "attachment" and container == "matroska":
             mapping.append(["-map", f"0:{stream_index}?"])
         elif stream_type == "data" and container == "matroska":
-            debug_log(
+            logger.debug(
                 "Skipping data stream %s with codec '%s' for MKV output"
                 % (stream_index, codec_name)
             )
 
     if not has_video_mapping:
         mapping.insert(0, ["-map", "0:v:0?"])
-    debug_log(
+    logger.debug(
         "Built stream mapping for %s output: %s"
         % (
             container,
@@ -875,7 +871,7 @@ def build_ffmpeg_command(
             "matroska",
             str(output_file),
         ]
-    debug_log(
+    logger.debug(
         "Built ffmpeg command configuration: %s"
         % {
             "output_profile": output_profile,
@@ -919,7 +915,7 @@ def merge_chapters(fragment_probes):
             )
             chapter_index += 1
         offset_seconds += getattr(fragment, "duration", 0.0) or 0.0
-    debug_log("Merged chapter metadata entries: %s" % merged)
+    logger.debug("Merged chapter metadata entries: %s" % merged)
     return merged
 
 
